@@ -1,0 +1,66 @@
+{
+  "manifest-version": "1",
+  "compiler-version": "0.35.0",
+  "compiler-commit": "debb05f9414b9d1e176741c2be289bb32233f0fc",
+  "language-version": "0.27.0",
+  "runtime-version": "0.20.0",
+  "compiler": {
+    "type": "directory",
+    "contract-info.json": {
+      "type": "file",
+      "size": 13701,
+      "hash": "5effe1181650e1ac6b224fa32acf006e12382bb4ef3906a170f35b73f74ea782"
+    }
+  },
+  "contract": {
+    "type": "directory",
+    "index.d.ts": {
+      "type": "file",
+      "size": 10344,
+      "hash": "6cb9a665139943fb80d9344e9a86c974801a85ded354da18f8a78079cdf5bca2"
+    },
+    "index.js": {
+      "type": "file",
+      "size": 156639,
+      "hash": "70867d4771788a5b7decde9e5738c4d70a6b930b451640d455e87bbf7e3ea460"
+    },
+    "index.js.map": {
+      "type": "file",
+      "size": 7079,
+      "hash": "16c86d86b8b0b8e69eb412070d0ec388cd8d9c0ff6d7507d91c46540ce8d73fa"
+    }
+  },
+  "zkir": {
+    "type": "directory",
+    "approveTitleInspection.zkir": {
+      "type": "file",
+      "size": 7893,
+      "hash": "f5d732a01c7cfe620a4e44c1a8143e654c0d78480a084294fea372787508c49f"
+    },
+    "closeAndSettleDeal.zkir": {
+      "type": "file",
+      "size": 11683,
+      "hash": "315c3b42bcfc34d7af360d5d426cdfe73c600b9315935ca5df8f17f3dc862574"
+    },
+    "depositEarnestMoney.zkir": {
+      "type": "file",
+      "size": 8838,
+      "hash": "c1098299f49c52b0dd4916fd0977cb8dd27b581897c55f62d32af6098e9a12ad"
+    },
+    "refundBuyerEarnest.zkir": {
+      "type": "file",
+      "size": 11310,
+      "hash": "42278352738256f7f311dd3eb095fd1e07baa89d858b808c4d58f1143c3f8130"
+    },
+    "registerAttestor.zkir": {
+      "type": "file",
+      "size": 3028,
+      "hash": "6c6907e773f20d3f39ea3d05fdaea8189b8789f7a213a7f837cdc9d7b090e70d"
+    },
+    "submitAttestedFunds.zkir": {
+      "type": "file",
+      "size": 3286,
+      "hash": "3daad6782c5ae45b9d81f667a2b2b3b2bb895914c116d5d67156a6488c754905"
+    }
+  }
+}

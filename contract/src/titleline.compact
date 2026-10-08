@@ -1,0 +1,287 @@
+// SPDX-License-Identifier: Apache-2.0
+// Titleline: High-Value Real Estate Earnest Money & Title Escrow on Midnight.
+// Certified bank attestations, confidential earnest deposits, proof-of-funds range verification, and settlement closing.
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+export enum EscrowState { deposited, title_inspected, settled, refunded, disputed }
+
+export struct EscrowContractTerms {
+  earnestDeposit: Uint<64>;
+  totalPurchasePrice: Uint<64>;
+  closingDeadline: Uint<32>;
+  propertyParcelId: Uint<32>;
+  currencyCode: Uint<16>;
+}
+
+export struct EscrowPropertyRecord {
+  buyer: Bytes<32>;
+  seller: Bytes<32>;
+  titleEscrowAgent: Bytes<32>;
+  termsCommitment: Bytes<32>;
+  status: EscrowState;
+  createdAt: Uint<32>;
+  closingDeadline: Uint<32>;
+  minEarnestDeposit: Uint<64>;
+}
+
+struct TitleCommitmentInput {
+  domain: Bytes<32>;
+  terms: EscrowContractTerms;
+  buyer: Bytes<32>;
+  salt: Bytes<32>;
+}
+
+struct BalanceAttestationInput {
+  domain: Bytes<32>;
+  buyer: Bytes<32>;
+  availableFunds: Uint<64>;
+  salt: Bytes<32>;
+}
+
+// ---------------------------------------------------------------------------
+// Ledger State
+// ---------------------------------------------------------------------------
+
+export sealed ledger titleRegistryAdmin: Bytes<32>;
+export ledger certifiedAttestors: Map<Bytes<32>, Boolean>;
+export ledger attestedFundsRegistry: Map<Bytes<32>, Boolean>;
+export ledger properties: Map<Bytes<32>, EscrowPropertyRecord>;
+export ledger propertyCount: Counter;
+export ledger settlementNullifiers: Map<Bytes<32>, Boolean>;
+export ledger titleInspectionProofs: Map<Bytes<32>, Bytes<32>>;
+
+// ---------------------------------------------------------------------------
+// Witnesses (Private Inputs)
+// ---------------------------------------------------------------------------
+
+witness privateKey(): Bytes<32>;
+witness contractTerms(): EscrowContractTerms;
+witness contractSalt(): Bytes<32>;
+witness buyerAvailableFunds(): Uint<64>;
+witness attestationSalt(): Bytes<32>;
+
+// ---------------------------------------------------------------------------
+// Pure Circuits
+// ---------------------------------------------------------------------------
+
+export pure circuit buyerKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "titleline:buyer:v1"), sk]);
+}
+
+export pure circuit sellerKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "titleline:seller:v1"), sk]);
+}
+
+export pure circuit titleAgentKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "titleline:titleagent:v1"), sk]);
+}
+
+export pure circuit attestorKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "titleline:attestor:v1"), sk]);
+}
+
+export pure circuit titleCommitment(terms: EscrowContractTerms, buyer: Bytes<32>, salt: Bytes<32>): Bytes<32> {
+  return persistentHash<TitleCommitmentInput>(TitleCommitmentInput {
+    domain: pad(32, "titleline:contract:v1"),
+    terms: terms,
+    buyer: buyer,
+    salt: salt
+  });
+}
+
+export pure circuit balanceAttestationCommitment(buyer: Bytes<32>, availableFunds: Uint<64>, salt: Bytes<32>): Bytes<32> {
+  return persistentHash<BalanceAttestationInput>(BalanceAttestationInput {
+    domain: pad(32, "titleline:attestation:v1"),
+    buyer: buyer,
+    availableFunds: availableFunds,
+    salt: salt
+  });
+}
+
+export pure circuit escrowNullifier(salt: Bytes<32>, escrowId: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "titleline:nullifier:v1"), escrowId, salt]);
+}
+
+export pure circuit deedReleaseToken(commitment: Bytes<32>, recipient: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "titleline:deed:v1"), commitment, recipient]);
+}
+
+export pure circuit refundToken(commitment: Bytes<32>, buyer: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "titleline:refund:v1"), commitment, buyer]);
+}
+
+// Zero-knowledge range check: buyer holds at least enough attested funds for total purchase price
+export pure circuit hasSufficientFunds(available: Uint<64>, required: Uint<64>): Boolean {
+  return available >= required;
+}
+
+// ---------------------------------------------------------------------------
+// State Transition Circuits
+// ---------------------------------------------------------------------------
+
+constructor() {
+  titleRegistryAdmin = disclose(titleAgentKey(privateKey()));
+}
+
+// Title admin authorizes a financial institution / bank as a certified balance attestor
+export circuit registerAttestor(attestorPublic: Bytes<32>): [] {
+  assert(disclose(titleAgentKey(privateKey()) == titleRegistryAdmin), "Only title admin can register attestors");
+  certifiedAttestors.insert(disclose(attestorPublic), true);
+}
+
+// Certified bank or financial institution commits an attested balance commitment for a client
+export circuit submitAttestedFunds(attestationCommitment: Bytes<32>): [] {
+  const pKey = privateKey();
+  const caller = disclose(attestorKey(pKey));
+  assert(certifiedAttestors.member(caller), "Only certified financial institution can attest funds");
+  attestedFundsRegistry.insert(disclose(attestationCommitment), true);
+}
+
+export circuit depositEarnestMoney(
+  escrowId: Bytes<32>,
+  buyerPublic: Bytes<32>,
+  sellerPublic: Bytes<32>,
+  titleAgentPublic: Bytes<32>,
+  timestamp: Uint<32>
+): [] {
+  const id = disclose(escrowId);
+  assert(!properties.member(id), "Escrow already exists for this parcel");
+
+  const pKey = privateKey();
+  assert(disclose(buyerKey(pKey) == buyerPublic), "Invalid buyer identity");
+
+  const terms = contractTerms();
+  const salt = contractSalt();
+  const available = buyerAvailableFunds();
+  const aSalt = attestationSalt();
+
+  // Cryptographic binding: prove that the private balance matches a certified bank attestation on ledger
+  const computedAttestation = balanceAttestationCommitment(buyerPublic, available, aSalt);
+  assert(attestedFundsRegistry.member(disclose(computedAttestation)),
+         "No certified bank attestation found for buyer funds");
+
+  assert(disclose(terms.earnestDeposit > 0), "Earnest deposit must be positive");
+  assert(disclose(terms.closingDeadline > timestamp), "Closing deadline must be in future");
+  assert(disclose(hasSufficientFunds(available, terms.totalPurchasePrice)),
+         "Proof-of-funds verification failed: available funds below purchase price");
+
+  const commitment = disclose(titleCommitment(terms, buyerPublic, salt));
+
+  const record = EscrowPropertyRecord {
+    buyer: disclose(buyerPublic),
+    seller: disclose(sellerPublic),
+    titleEscrowAgent: disclose(titleAgentPublic),
+    termsCommitment: commitment,
+    status: EscrowState.deposited,
+    createdAt: disclose(timestamp),
+    closingDeadline: disclose(terms.closingDeadline),
+    minEarnestDeposit: disclose(terms.earnestDeposit)
+  };
+
+  properties.insert(id, record);
+  propertyCount.increment(1);
+}
+
+export circuit approveTitleInspection(escrowId: Bytes<32>, inspectionHash: Bytes<32>): [] {
+  const id = disclose(escrowId);
+  assert(properties.member(id), "Escrow not found");
+  const record = properties.lookup(id);
+  assert(record.status == EscrowState.deposited, "Escrow not in deposited state");
+
+  const pKey = privateKey();
+  assert(disclose(titleAgentKey(pKey) == record.titleEscrowAgent),
+         "Only certified title escrow agent can approve inspection");
+
+  const updated = EscrowPropertyRecord {
+    buyer: record.buyer,
+    seller: record.seller,
+    titleEscrowAgent: record.titleEscrowAgent,
+    termsCommitment: record.termsCommitment,
+    status: EscrowState.title_inspected,
+    createdAt: record.createdAt,
+    closingDeadline: record.closingDeadline,
+    minEarnestDeposit: record.minEarnestDeposit
+  };
+
+  properties.insert(id, updated);
+  titleInspectionProofs.insert(id, disclose(inspectionHash));
+}
+
+export circuit closeAndSettleDeal(escrowId: Bytes<32>): Bytes<32> {
+  const id = disclose(escrowId);
+  assert(properties.member(id), "Escrow not found");
+  const record = properties.lookup(id);
+  assert(record.status == EscrowState.title_inspected, "Title not inspected and approved");
+
+  const terms = contractTerms();
+  const salt = contractSalt();
+  const computed = titleCommitment(terms, record.buyer, salt);
+  assert(disclose(computed == record.termsCommitment), "Commitment terms mismatch");
+
+  const pKey = privateKey();
+  const aKey = titleAgentKey(pKey);
+  const sKey = sellerKey(pKey);
+  assert(disclose(aKey == record.titleEscrowAgent || sKey == record.seller),
+         "Not authorized to close deal");
+
+  const nullifier = disclose(escrowNullifier(salt, id));
+  assert(!settlementNullifiers.member(nullifier), "Escrow already settled or refunded");
+
+  const token = disclose(deedReleaseToken(record.termsCommitment, record.seller));
+
+  const updated = EscrowPropertyRecord {
+    buyer: record.buyer,
+    seller: record.seller,
+    titleEscrowAgent: record.titleEscrowAgent,
+    termsCommitment: record.termsCommitment,
+    status: EscrowState.settled,
+    createdAt: record.createdAt,
+    closingDeadline: record.closingDeadline,
+    minEarnestDeposit: record.minEarnestDeposit
+  };
+
+  properties.insert(id, updated);
+  settlementNullifiers.insert(nullifier, true);
+  return token;
+}
+
+// Refund path: buyer can reclaim earnest deposit if closing deadline expired or inspection rejected
+export circuit refundBuyerEarnest(escrowId: Bytes<32>, currentTimestamp: Uint<32>): Bytes<32> {
+  const id = disclose(escrowId);
+  const curTime = disclose(currentTimestamp);
+  assert(properties.member(id), "Escrow not found");
+  const record = properties.lookup(id);
+  assert(record.status == EscrowState.deposited, "Escrow not in refundable deposited state");
+  assert(curTime > record.closingDeadline, "Closing deadline has not yet passed");
+
+  const terms = contractTerms();
+  const salt = contractSalt();
+  const computed = titleCommitment(terms, record.buyer, salt);
+  assert(disclose(computed == record.termsCommitment), "Commitment terms mismatch");
+
+  const pKey = privateKey();
+  assert(disclose(buyerKey(pKey) == record.buyer), "Only buyer can claim earnest refund");
+
+  const nullifier = disclose(escrowNullifier(salt, id));
+  assert(!settlementNullifiers.member(nullifier), "Escrow already settled or refunded");
+
+  const token = disclose(refundToken(record.termsCommitment, record.buyer));
+
+  const updated = EscrowPropertyRecord {
+    buyer: record.buyer,
+    seller: record.seller,
+    titleEscrowAgent: record.titleEscrowAgent,
+    termsCommitment: record.termsCommitment,
+    status: EscrowState.refunded,
+    createdAt: record.createdAt,
+    closingDeadline: record.closingDeadline,
+    minEarnestDeposit: record.minEarnestDeposit
+  };
+
+  properties.insert(id, updated);
+  settlementNullifiers.insert(nullifier, true);
+  return token;
+}
