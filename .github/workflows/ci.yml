@@ -1,0 +1,49 @@
+name: closing-check
+on: { push: {}, pull_request: {} }
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env: { CONTRACT: contract/src/titleline.compact }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+
+      - name: Compact 0.35.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/midnightntwrk/compact/releases/latest/download/compact-installer.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/compact" update 0.35.0
+
+      - name: Keys are produced
+        run: |
+          compact compile "$CONTRACT" "$RUNNER_TEMP/deed-zk"
+          test -d "$RUNNER_TEMP/deed-zk/keys"
+
+      - name: Managed JS is reproducible
+        run: |
+          compact compile --skip-zk "$CONTRACT" "$RUNNER_TEMP/deed-js"
+          diff -r -x '*.map' "$RUNNER_TEMP/deed-js/contract" contract/src/managed/titleline/contract
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run demo
+      - run: npm run build:web
+
+      - if: github.ref_name == 'main' || github.ref_name == 'master'
+        uses: actions/upload-pages-artifact@v3
+        with: { path: dist }
+
+  publish:
+    needs: verify
+    if: github.ref_name == 'main' || github.ref_name == 'master'
+    runs-on: ubuntu-latest
+    permissions: { pages: write, id-token: write }
+    environment: { name: github-pages, url: '${{ steps.site.outputs.page_url }}' }
+    steps:
+      - id: site
+        uses: actions/deploy-pages@v4
